@@ -1,0 +1,26 @@
+First you will have to upload shapefile from postgis then follow below setting
+
+Phase 1: Prepare GeoServer
+Before writing code, you must ensure GeoServer allows these changes.
+
+Enable WFS-T:
+
+Log in to GeoServer.
+
+Go to Services > WFS.
+
+Ensure Service Level is set to "Transactional" or "Complete".
+
+Click Save.
+
+Enable CORS (Crucial):
+
+If your website is on localhost:3000 and GeoServer is on localhost:8080, your browser will block the request unless CORS is enabled in GeoServer's web.xml file.
+
+Quick fix for testing: You can use a browser extension like "CORS Unblock" temporarily, but for production, you must edit the GeoServer web.xml configuration.
+
+Check Security:
+
+Go to Data Security in GeoServer.
+
+Ensure your workspace/layer has Write permission enabled for the user you are connecting as. 

@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>OpenLayers WFS-T Editor</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v7.4.0/ol.css">
+    <style>
+        body { margin: 0; height: 100%; font-family: sans-serif; }
+        .map { position: absolute; top: 0; bottom: 0; width: 100%; }
+        
+        /* Style for the Toolbar */
+        .toolbar {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 4px;
+            box-shadow: 0 0 5px rgba(0,0,0,0.2);
+        }
+        .toolbar button {
+            display: block;
+            margin-bottom: 5px;
+            width: 100px;
+            padding: 8px;
+            cursor: pointer;
+        }
+        .toolbar button.active {
+            background-color: orange;
+            color: white;
+            font-weight: bold;
+        }
+        .save-btn {
+            background-color: #4CAF50; /* Green */
+            color: white;
+            margin-top: 10px !important;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="toolbar">
+        <button id="btn-navigate" class="active" onclick="setMode('navigate')">Navigate</button>
+        <button id="btn-insert" onclick="setMode('insert')">Insert Shape</button>
+        <button id="btn-update" onclick="setMode('update')">Update Shape</button>
+        <button id="btn-delete" onclick="setMode('delete')">Delete Shape</button>
+        <hr>
+        <button id="btn-save" class="save-btn" onclick="saveChanges()">SAVE TO DB</button>
+    </div>
+
+    <div id="map" class="map"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/ol@v7.4.0/dist/ol.js"></script>
+    
+    <script>
+    // --- CONFIGURATION ---
+    // YOU MUST CHECK THIS IN GEOSERVER WORKSPACES SETTINGS
+    const featureNS = 'http://www.opengeospatial.net/cite'; 
+    const layerName = 'pak_adm2';
+    const geometryName = 'geom'; // Check if your DB uses 'geom' or 'the_geom'
+
+    // --- STATE ARRAYS (declare early to avoid reference errors) ---
+    let addedFeatures = [];
+    let modifiedFeatures = new Set();
+    let removedFeatures = [];
+    let currentMode = 'navigate';
+
+    // 1. Define Source
+    const wfsSource = new ol.source.Vector({
+        format: new ol.format.GeoJSON(),
+        url: function(extent) {
+            return 'http://localhost:8080/geoserver/wfs?service=WFS' +
+                '&version=1.0.0' +
+                '&request=GetFeature' +
+                '&typeName=cite:' + layerName + 
+                '&outputFormat=application/json' +
+                '&srsname=EPSG:3857' +
+                '&bbox=' + extent.join(',') + ',EPSG:3857'; 
+        },
+        strategy: ol.loadingstrategy.bbox
+    });
+
+    // 2. Define Layer
+    const wfsLayer = new ol.layer.Vector({
+        source: wfsSource,
+        style: new ol.style.Style({
+            stroke: new ol.style.Stroke({ color: 'blue', width: 2 })
+        })
+    });
+
+    // 3. Create Map
+    const map = new ol.Map({
+        target: 'map',
+        layers: [
+            new ol.layer.Tile({ source: new ol.source.OSM() }),
+            wfsLayer
+        ],
+        view: new ol.View({
+            projection: 'EPSG:3857',
+            center: ol.proj.fromLonLat([69.3451, 30.3753]),
+            zoom: 5
+        })
+    });
+
+    // --- INTERACTIONS (create, but add/remove from map with setMode) ---
+    const formatWFS = new ol.format.WFS();
+    let interactSelect = new ol.interaction.Select();
+    let interactModify = new ol.interaction.Modify({ source: wfsSource });
+    let interactDraw = new ol.interaction.Draw({ source: wfsSource, type: 'Polygon' });
+    let interactSnap = new ol.interaction.Snap({ source: wfsSource });
+
+    // SELECT (used for delete)
+    interactSelect.on('select', function(e) {
+        if (currentMode === 'delete') {
+            const selected = e.selected || [];
+            selected.forEach((f) => {
+                // store feature (make a clone with id if needed)
+                removedFeatures.push(f);
+                wfsSource.removeFeature(f);
+            });
+            // clear selection
+            interactSelect.getFeatures().clear();
+        }
+    });
+
+    // MODIFY (used for update)
+    interactModify.on('modifyend', function(e) {
+        e.features.forEach(function(f) {
+            // Optional: add or modify attributes here (careful: will overwrite)
+            // f.set('name_0', 'Pakistan');
+            // f.set('name_1', 'Updated Region');
+
+            modifiedFeatures.add(f);
+        });
+    });
+
+    // DRAW (used for insert)
+    interactDraw.on('drawend', function(e) {
+        const feature = e.feature;
+        const geometry = feature.getGeometry();
+
+        // Convert to MultiPolygon if needed by DB
+        const newGeometry = new ol.geom.MultiPolygon([geometry.getCoordinates()]);
+        feature.setGeometry(newGeometry);
+
+        // Add required attributes for your layer schema
+        feature.set('name_0', 'Pakistan');
+        feature.set('name_1', 'New Region');
+        feature.set('name_2', 'Test Area');
+        feature.set('iso', 'PK');
+        feature.set('type_2', 'District');
+        feature.set('engtype_2', 'District');
+        feature.set('id_0', 0);
+        feature.set('id_1', 0);
+        feature.set('id_2', 0);
+
+        addedFeatures.push(feature);
+    });
+
+    // --- MODE SWITCHER ---
+    function setMode(mode) {
+        currentMode = mode;
+
+        // Remove all interactions first
+        map.removeInteraction(interactSelect);
+        map.removeInteraction(interactModify);
+        map.removeInteraction(interactDraw);
+        map.removeInteraction(interactSnap);
+
+        // Update Button Styles
+        document.querySelectorAll('.toolbar button').forEach(b => b.classList.remove('active'));
+        const btn = document.getElementById('btn-' + mode);
+        if (btn) btn.classList.add('active');
+
+        // Add specific interaction based on mode
+        if (mode === 'insert') {
+            map.addInteraction(interactDraw);
+            map.addInteraction(interactSnap);
+        } else if (mode === 'update') {
+            map.addInteraction(interactModify);
+            map.addInteraction(interactSnap);
+        } else if (mode === 'delete') {
+            map.addInteraction(interactSelect);
+        }
+        // 'navigate' adds nothing (default map drag)
+    }
+
+    // Set initial mode
+    setMode('navigate');
+
+    // --- SAVE FUNCTION (WFS-T) ---
+    async function saveChanges() {
+        const updates = Array.from(modifiedFeatures);
+
+        const node = formatWFS.writeTransaction(addedFeatures, updates, removedFeatures, {
+            featureNS: featureNS,
+            featurePrefix: 'cite',
+            featureType: layerName,
+            srsName: 'EPSG:3857',
+            nativeElements: []
+        });
+
+        const serializer = new XMLSerializer();
+        let payload = serializer.serializeToString(node);
+
+        // Log original XML
+        
+        console.log('Original XML:', payload);
+
+        // --- FIX FOR BOTH INSERT AND UPDATE ---
+        if (geometryName && geometryName !== 'geometry') {
+            
+            // 1. Fix UPDATE: Replaces <Name>geometry</Name> with <Name>geom</Name>
+            payload = payload.replace(/<Name>geometry<\/Name>/g, '<Name>' + geometryName + '</Name>');
+
+            // 2. Fix INSERT: Replaces <cite:geometry> with <cite:geom> (and closing tags)
+            // This targets the specific "geometry>" string found in tags
+            payload = payload.replace(/geometry>/g, geometryName + '>');
+        }
+
+        console.log('Fixed XML:', payload);
+
+        try {
+            const response = await fetch('http://localhost:8080/geoserver/wfs', {
+                method: 'POST',
+                body: payload,
+                headers: { 'Content-Type': 'text/xml' }
+            });
+
+            const result = await response.text();
+            console.log(result);
+
+            if (result.includes('Exception')) {
+                alert('Error Saving! Check Console.');
+            } else {
+                alert('Saved Successfully!');
+                // clear local change trackers
+                addedFeatures = [];
+                modifiedFeatures.clear();
+                removedFeatures = [];
+                wfsSource.refresh();
+            }
+        } catch (error) {
+            console.error(error);
+            alert('Connection Error');
+        }
+    }
+    </script>
+</body>
+</html>
